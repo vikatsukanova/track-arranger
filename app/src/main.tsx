@@ -19,7 +19,12 @@ import {
   FolderOpen,
   RotateCcw,
 } from "lucide-react";
-import { Playback, shouldToggleTransport, type Position } from "./playback";
+import {
+  Playback,
+  playbackStartBar,
+  shouldToggleTransport,
+  type Position,
+} from "./playback";
 import { audioBlob } from "./api";
 import {
   confirmLoop,
@@ -403,6 +408,8 @@ function App() {
   }
   async function startArrangement(bar = cursor.current) {
     await run("Loading arrangement…", async () => {
+      bar = playbackStartBar(bar, totalBars);
+      setCursor(bar);
       stopAudio();
       await player.current.play(
         project,

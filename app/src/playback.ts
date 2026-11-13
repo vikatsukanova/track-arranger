@@ -105,6 +105,10 @@ export function shouldToggleTransport(event: KeyboardEvent): boolean {
   );
 }
 
+export function playbackStartBar(bar: number, totalBars: number): number {
+  return bar >= totalBars ? 0 : Math.max(0, bar);
+}
+
 export class Playback {
   private context?: AudioContext;
   private nodes: AudioBufferSourceNode[] = [];
@@ -194,7 +198,7 @@ export class Playback {
     const start =
       Math.ceil((context.currentTime + 0.1) * context.sampleRate) /
       context.sampleRate;
-    fromBar = Math.max(0, Math.min(fromBar, plan.at(-1)?.endBar || 0));
+    fromBar = playbackStartBar(fromBar, plan.at(-1)?.endBar || 0);
     const seekSeconds =
       Math.round(((fromBar * 240) / project.bpm) * context.sampleRate) /
       context.sampleRate;

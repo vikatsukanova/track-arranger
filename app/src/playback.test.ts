@@ -170,6 +170,26 @@ describe("audio scheduling and caching", () => {
     expect(progress).toHaveBeenLastCalledWith(null);
     expect(cancelAnimationFrame).toHaveBeenCalled();
   });
+  it("leaves the cursor at natural end and restarts playback from the end bar", async () => {
+    const playback = new Playback();
+    const progress = vi.fn();
+    await playback.play(project, pending, progress);
+    now = 100;
+    frame();
+    const lastPosition = progress.mock.calls
+      .filter(([position]) => position !== null)
+      .at(-1)![0];
+    expect(lastPosition.bar).toBe(24);
+    sources = [];
+    await playback.play(project, pending, progress, lastPosition.bar);
+    expect(sources).toHaveLength(2);
+    expect(sources[0].start.mock.calls[0][1]).toBe(0);
+    expect(progress).toHaveBeenLastCalledWith({
+      bar: 0,
+      section: "intro",
+      suggestion: true,
+    });
+  });
   it("starts mid-section with the correct offset and skips earlier sections", async () => {
     const playback = new Playback();
     await playback.play(project, pending, vi.fn(), 4);
