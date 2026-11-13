@@ -31,7 +31,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: pip install -e '.[desktop,dev]'
+      - run: pip install --only-binary=llvmlite,numba -e '.[desktop,dev]'
       - run: pytest -q
       - run: npm ci && npm test && npm run build
         working-directory: app
