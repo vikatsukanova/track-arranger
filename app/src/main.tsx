@@ -19,6 +19,24 @@ import {
   FolderOpen,
   RotateCcw,
 } from "lucide-react";
+import {
+  Playback,
+  playbackStartBar,
+  shouldToggleTransport,
+  type Position,
+} from "./playback";
+import { audioBlob } from "./api";
+import {
+  confirmLoop,
+  placeLoops,
+  roles,
+  subgenres,
+  type ImportedLoop,
+  type Pending,
+  type Role,
+  type Subgenre,
+  type Variation,
+} from "./model";
 import { api, connect } from "./api";
 import {
   applySuggestion,
@@ -33,16 +51,92 @@ import {
 import "./style.css";
 
 function App() {
-  const [project, setProject] = useState<Project>(() => {
+  const [loaded] = useState(() => {
+    let project: Project = initial;
+    let pending: Pending[] = [];
     try {
-      return (
+      project =
         JSON.parse(localStorage.getItem("track-arranger-v1") || "null") ||
-        initial
+        initial;
+    } catch {
+      /* Use an empty workspace. */
+    }
+    try {
+      pending = JSON.parse(
+        localStorage.getItem("track-arranger-pending-v1") || "[]",
       );
     } catch {
-      return initial;
+      /* No saved suggestions. */
     }
+    const placed = placeLoops(project, pending);
+    return {
+      project: { ...project, sections: placed.sections },
+      pending: placed.pending,
+    };
   });
+  const [project, setProject] = useState<Project>(loaded.project);
+  const [imports, setImports] = useState<ImportedLoop[]>([]);
+  const [role, setRole] = useState<Role>("Drop");
+  const [subgenre, setSubgenre] = useState<Subgenre>("General");
+  const [pending, setPending] = useState<Pending[]>(loaded.pending);
+  const importing = useRef(false);
+  const busyRef = useRef(false);
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  const player = useRef(new Playback());
+  const audition = useRef<HTMLAudioElement | null>(null);
+  const audioUrl = useRef("");
+  const audioVersion = useRef(0);
+  const [playing, setPlaying] = useState("");
+  const cursor = useRef(0);
+  const [seekBar, setSeekBar] = useState(0);
+  const draggingPlayhead = useRef(false);
+  const resumeAfterDrag = useRef(false);
+  const [position, setPosition] = useState<Position | null>(null);
+  function stopAudio() {
+    audioVersion.current++;
+    player.current.stop();
+    audition.current?.pause();
+    audition.current = null;
+    URL.revokeObjectURL(audioUrl.current);
+    audioUrl.current = "";
+    setPlaying("");
+    setPosition(null);
+  }
+  async function preview(
+    id: string,
+    metadata = project.loops.find((l) => l.id === id),
+  ) {
+    if (playing === id && audition.current) {
+      if (audition.current.paused) await audition.current.play();
+      else audition.current.pause();
+      return;
+    }
+    stopAudio();
+    const version = audioVersion.current;
+    const blob = await audioBlob(
+      id,
+      undefined,
+      metadata?.bars,
+      metadata?.trim_to_bars ?? true,
+      metadata?.bpm,
+    );
+    if (version !== audioVersion.current) return;
+    audioUrl.current = URL.createObjectURL(blob);
+    audition.current = new Audio(audioUrl.current);
+    setPlaying(id);
+    await audition.current.play();
+  }
+  useEffect(() => {
+    stopAudio();
+    localStorage.setItem("track-arranger-pending-v1", JSON.stringify(pending));
+  }, [pending]);
+  useEffect(() => {
+    if (imports[0]) {
+      setRole(imports[0].suggested_role);
+      setSubgenre(project.subgenre || "General");
+    }
+  }, [imports[0]?.id]);
   const [selected, setSelected] = useState("");
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState("");
@@ -72,6 +166,7 @@ function App() {
   const active = project.sections.find((s) => s.id === selected);
   const lanes = Array.from(
     new Set([
+      "Loop",
       "Drums",
       "Bass",
       "Texture",
@@ -83,6 +178,8 @@ function App() {
   const minutes = (totalBars * 240) / project.bpm / 60;
 
   async function run(label: string, action: () => Promise<void>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(label);
     setError("");
     setMessage("");
@@ -91,6 +188,7 @@ function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      busyRef.current = false;
       setBusy("");
     }
   }
@@ -113,6 +211,7 @@ function App() {
     };
   }, []);
   useEffect(() => {
+    stopAudio();
     localStorage.setItem("track-arranger-v1", JSON.stringify(project));
     suggestionVersion.current++;
     setSuggestions([]);
@@ -122,12 +221,17 @@ function App() {
     setSuggestions([]);
   }, [selected]);
   async function importPaths(paths: string[]) {
+    if (busyRef.current || importing.current || imports.length) return;
+    importing.current = true;
     await run("Analyzing loops…", async () => {
       for (const path of paths) {
-        const loops = await api<Loop[]>("/loops/import", { paths: [path] });
-        setProject((p) => ({ ...p, loops: [...p.loops, ...loops] }));
+        const loops = await api<ImportedLoop[]>("/loops/import", {
+          paths: [path],
+        });
+        setImports((p) => [...p, ...loops]);
       }
     });
+    importing.current = false;
   }
   useEffect(() => {
     if (!isTauri() || !ready) return;
@@ -137,7 +241,7 @@ function App() {
     return () => {
       void subscription.then((unlisten) => unlisten());
     };
-  }, [ready]);
+  }, [ready, imports.length]);
   useEffect(() => {
     function onMove(e: PointerEvent) {
       if (!resize.current) return;
@@ -171,14 +275,112 @@ function App() {
     }));
   }
   async function upload(files: FileList | File[]) {
+    if (busyRef.current || importing.current || imports.length || !ready)
+      return;
+    importing.current = true;
     await run("Analyzing loops…", async () => {
       for (const file of Array.from(files)) {
         const form = new FormData();
         form.append("file", file);
-        const loop = await api<Loop>("/loops/upload", form);
-        setProject((p) => ({ ...p, loops: [...p.loops, loop] }));
+        const loop = await api<ImportedLoop>("/loops/upload", form);
+        setImports((p) => [...p, loop]);
       }
     });
+    importing.current = false;
+  }
+  async function suggestStructure() {
+    await run("Generating structure…", async () => {
+      if (
+        project.sections.length &&
+        !(isTauri()
+          ? await ask("Replace the existing arrangement?", {
+              title: "Suggest structure",
+            })
+          : window.confirm("Replace the existing arrangement?"))
+      )
+        return;
+      const sections = await api<Section[]>("/arrangement");
+      const current = projectRef.current;
+      const placed = placeLoops({ ...current, sections });
+      setProject({ ...current, sections: placed.sections });
+      setPending(placed.pending);
+      setSelected(sections[0].id);
+    });
+  }
+  async function acceptImport() {
+    await run("Placing confirmed loop…", async () => {
+      const loop: Loop = { ...imports[0], role, subgenre };
+      const template = project.sections.length
+        ? []
+        : await api<Section[]>("/arrangement");
+      const next = confirmLoop(projectRef.current, loop, template);
+      const placed = placeLoops(next, pending);
+      setProject({ ...next, sections: placed.sections });
+      setPending(placed.pending);
+      setSelected(next.sections[0]?.id || "");
+      setImports((p) => p.slice(1));
+    });
+  }
+  async function renderPending(item: Pending, accept: boolean) {
+    await run(
+      accept ? "Rendering accepted variation…" : "Preparing audition…",
+      async () => {
+        const section = project.sections.find((s) => s.id === item.section);
+        const loop = project.loops.find((l) => l.id === item.loop);
+        if (!section || !loop) return;
+        if (accept && section.clips.some((c) => c.lane === "Loop"))
+          throw new Error("Loop lane is occupied. Clear it before accepting.");
+        const rendered = await player.current.variation(
+          loop,
+          section,
+          project.bpm,
+          item,
+        );
+        if (!accept) {
+          await preview(rendered.id, rendered);
+          return;
+        }
+        const current = projectRef.current.sections.find(
+          (s) => s.id === item.section,
+        );
+        if (
+          !current ||
+          current.clips.some((c) => c.lane === "Loop") ||
+          !projectRef.current.loops.some((l) => l.id === item.loop)
+        )
+          throw new Error("Arrangement changed. Review the suggestion again.");
+        setProject((p) => ({
+          ...p,
+          loops: [...p.loops, rendered],
+          sections: p.sections.map((s) =>
+            s.id === section.id
+              ? {
+                  ...s,
+                  clips: [...s.clips, { lane: "Loop", loop_id: rendered.id }],
+                }
+              : s,
+          ),
+        }));
+        setPending((p) => p.filter((x) => x !== item));
+      },
+    );
+  }
+  function removeLoop(id: string) {
+    const current = projectRef.current;
+    const next = {
+      ...current,
+      loops: current.loops.filter((loop) => loop.id !== id),
+      sections: current.sections.map((section) => ({
+        ...section,
+        clips: section.clips.filter((clip) => clip.loop_id !== id),
+      })),
+    };
+    const placed = placeLoops(
+      next,
+      pending.filter((item) => item.loop !== id),
+    );
+    setProject({ ...next, sections: placed.sections });
+    setPending(placed.pending);
   }
   async function browse() {
     if (!isTauri()) {
@@ -194,7 +396,7 @@ function App() {
     if (paths) await importPaths(Array.isArray(paths) ? paths : [paths]);
   }
   function place(section: Section, lane: string, loop_id: string) {
-    if (!project.loops.some((l) => l.id === loop_id)) return;
+    if (!project.loops.some((l) => l.id === loop_id && l.role)) return;
     updateSection(section.id, {
       clips: [
         ...section.clips.filter((c) => c.lane !== lane),
@@ -212,7 +414,49 @@ function App() {
       ),
     }));
   }
-  const disabled = !ready || !!busy;
+  function setCursor(bar: number) {
+    cursor.current = Math.max(0, Math.min(bar, totalBars));
+    setSeekBar(cursor.current);
+  }
+  async function startArrangement(bar = cursor.current) {
+    await run("Loading arrangement…", async () => {
+      bar = playbackStartBar(bar, totalBars);
+      setCursor(bar);
+      stopAudio();
+      await player.current.play(
+        project,
+        pending,
+        (next) => {
+          setPosition(next);
+          if (next) setCursor(next.bar);
+          setPlaying(next ? "arrangement" : "");
+        },
+        bar,
+      );
+    });
+  }
+  function seek(bar: number) {
+    const resume = playing === "arrangement";
+    stopAudio();
+    setCursor(bar);
+    if (resume) void startArrangement(cursor.current);
+  }
+  function pointerBar(event: React.PointerEvent | React.MouseEvent) {
+    const timeline = (event.currentTarget as HTMLElement).closest(".timeline")!;
+    return (event.clientX - timeline.getBoundingClientRect().left - 86) / 6;
+  }
+  useEffect(() => {
+    function keydown(event: KeyboardEvent) {
+      if (!shouldToggleTransport(event)) return;
+      event.preventDefault();
+      if (playing === "arrangement") stopAudio();
+      else if (ready && !busy && !imports.length && project.sections.length)
+        void startArrangement();
+    }
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [playing, ready, busy, imports.length, project, pending]);
+  const disabled = !ready || !!busy || !!imports.length;
   return (
     <div className="app">
       <header>
@@ -241,8 +485,21 @@ function App() {
         <div className="settings">
           <label>
             GENRE
-            <select value={project.genre} aria-label="Genre">
-              <option value="dnb">Drum & bass</option>
+            <select
+              value={project.subgenre || "General"}
+              aria-label="Genre / subgenre"
+              onChange={(e) =>
+                setProject((p) => ({
+                  ...p,
+                  subgenre: e.target.value as Subgenre,
+                }))
+              }
+            >
+              {subgenres.map((g) => (
+                <option key={g} value={g}>
+                  Drum &amp; bass · {g}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -263,20 +520,14 @@ function App() {
           </label>
           <button
             className="primary"
-            disabled={disabled || !!project.sections.length}
-            onClick={() =>
-              void run("Generating structure…", async () => {
-                const sections = await api<Section[]>("/arrangement");
-                setProject((p) => ({ ...p, sections }));
-                setSelected(sections[0].id);
-              })
-            }
+            disabled={disabled}
+            onClick={() => void suggestStructure()}
           >
             <Sparkles size={16} /> Suggest structure
           </button>
         </div>
       </div>
-      <div className="status" role="status">
+      <div className={`status ${busy ? "working" : ""}`} role="status">
         {busy ||
           message ||
           (ready
@@ -291,6 +542,56 @@ function App() {
           </button>
         </div>
       )}
+      {imports[0] && (
+        <form
+          key={imports[0].id}
+          className="import-confirm"
+          aria-label="Confirm loop role"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void acceptImport();
+          }}
+        >
+          <h2>Where does {imports[0].filename} belong?</h2>
+          <p>
+            {imports[0].bpm} BPM · {imports[0].key} · {imports[0].bars} bars ·
+            Drum &amp; bass
+          </p>
+          <p>Role is a rough guess. Confirm before adding this loop.</p>
+          <label>
+            Loop role{" "}
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as Role)}
+            >
+              {roles.map((r) => (
+                <option key={r}>{r}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Subgenre{" "}
+            <select
+              value={subgenre}
+              onChange={(e) => setSubgenre(e.target.value as Subgenre)}
+            >
+              {subgenres.map((g) => (
+                <option key={g}>{g}</option>
+              ))}
+            </select>
+          </label>
+          <button autoFocus className="primary" disabled={!!busy}>
+            Confirm loop
+          </button>
+          <button
+            type="button"
+            disabled={!!busy}
+            onClick={() => setImports((p) => p.slice(1))}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
       <main>
         <aside className="library">
           <div className="panel-title">
@@ -301,6 +602,7 @@ function App() {
           <button
             disabled={disabled}
             className="dropzone"
+            aria-busy={busy === "Analyzing loops…"}
             onClick={() => void browse()}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
@@ -311,7 +613,15 @@ function App() {
             <span>
               <Upload size={22} />
             </span>
-            <strong>Drop your loops here</strong>
+            <strong>
+              {busy === "Analyzing loops…" ? (
+                <>
+                  <span className="spinner" /> Analyzing loops…
+                </>
+              ) : (
+                "Drop your loops here"
+              )}
+            </strong>
             <small>or click to browse · WAV, AIFF, MP3</small>
           </button>
           <input
@@ -328,7 +638,12 @@ function App() {
           <p className="eyebrow library-label">
             IMPORTED LOOPS <span>4/4</span>
           </p>
-          <div className="loop-list">
+          <div className="loop-list" aria-busy={busy === "Analyzing loops…"}>
+            {busy === "Analyzing loops…" && (
+              <article className="loop-card pending">
+                <span className="spinner" /> Analyzing your audio…
+              </article>
+            )}
             {project.loops.length === 0 && (
               <div className="empty-library">
                 <AudioLines size={32} />
@@ -343,7 +658,7 @@ function App() {
               <article
                 className={`loop-card ${loopChoice === loop.id ? "chosen" : ""}`}
                 key={loop.id}
-                draggable
+                draggable={!!loop.role}
                 onDragStart={(e) => e.dataTransfer.setData("loop", loop.id)}
               >
                 <button
@@ -355,14 +670,55 @@ function App() {
                   <strong>{loop.filename}</strong>
                   <span>{String(i + 1).padStart(2, "0")}</span>
                 </button>
-                <div className="wave" aria-hidden="true">
-                  {Array.from({ length: 38 }, (_, n) => (
-                    <i
-                      key={n}
-                      style={{ height: `${6 + ((n * 17 + i * 11) % 25)}px` }}
-                    />
-                  ))}
-                </div>
+                <button
+                  onClick={() =>
+                    void run("Loading audio…", () => preview(loop.id))
+                  }
+                >
+                  Play / pause
+                </button>
+                <p>Drum &amp; bass · {loop.subgenre || "General"}</p>
+                <label>
+                  Subgenre{" "}
+                  <select
+                    value={loop.subgenre || "General"}
+                    onChange={(e) =>
+                      updateLoop(loop.id, {
+                        subgenre: e.target.value as Subgenre,
+                      })
+                    }
+                  >
+                    {subgenres.map((g) => (
+                      <option key={g}>{g}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Role{" "}
+                  <select
+                    value={loop.role || ""}
+                    onChange={(e) =>
+                      updateLoop(loop.id, { role: e.target.value as Role })
+                    }
+                  >
+                    <option disabled value="">
+                      Confirm role
+                    </option>
+                    {roles.map((r) => (
+                      <option key={r}>{r}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={loop.trim_to_bars ?? true}
+                    onChange={(e) =>
+                      updateLoop(loop.id, { trim_to_bars: e.target.checked })
+                    }
+                  />{" "}
+                  Trim to bars
+                </label>
                 <div className="loop-metadata">
                   <label>
                     BPM
@@ -412,16 +768,7 @@ function App() {
                 <button
                   className="remove-loop"
                   aria-label={`Remove ${loop.filename}`}
-                  onClick={() =>
-                    setProject((p) => ({
-                      ...p,
-                      loops: p.loops.filter((l) => l.id !== loop.id),
-                      sections: p.sections.map((s) => ({
-                        ...s,
-                        clips: s.clips.filter((c) => c.loop_id !== loop.id),
-                      })),
-                    }))
-                  }
+                  onClick={() => removeLoop(loop.id)}
                 >
                   <X size={12} /> Remove
                 </button>
@@ -434,7 +781,16 @@ function App() {
             Edit BPM, key and bars anytime.
           </div>
         </aside>
-        <section className="workspace">
+        <section
+          className="workspace"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            if (e.dataTransfer.files.length) {
+              e.preventDefault();
+              void upload(e.dataTransfer.files);
+            }
+          }}
+        >
           <div className="panel-title">
             <div>
               <h2>Arrangement</h2>
@@ -448,6 +804,14 @@ function App() {
             </div>
           </div>
           <div className="timeline-controls">
+            <button
+              disabled={disabled || !project.sections.length}
+              onClick={() => void startArrangement()}
+            >
+              Play arrangement
+            </button>
+            <button onClick={stopAudio}>Stop</button>
+            <button onClick={() => seek(0)}>Return to start</button>
             <span>
               <span className="green-dot" /> 8-BAR GRID
             </span>
@@ -463,6 +827,7 @@ function App() {
                       : window.confirm(question)
                   ) {
                     setProject((p) => ({ ...p, sections: [] }));
+                    setPending([]);
                     setSelected("");
                   }
                 }}
@@ -498,6 +863,13 @@ function App() {
                 <i />
               </div>
               <h3>Your loop has places to go.</h3>
+              <button
+                className="primary"
+                disabled={disabled}
+                onClick={() => void suggestStructure()}
+              >
+                Suggest structure
+              </button>
               <p>
                 Suggest a DnB structure to start shaping your track,
                 <br />
@@ -508,8 +880,55 @@ function App() {
             <div className="timeline-scroll">
               <div
                 className="timeline"
+                onClickCapture={(e) => {
+                  const target = e.target as HTMLElement;
+                  if (
+                    !target.closest(".playhead, .resize") &&
+                    target.closest(".ruler, .section-row")
+                  )
+                    seek(pointerBar(e));
+                }}
                 style={{ width: `${Math.max(680, totalBars * 6 + 86)}px` }}
               >
+                <div
+                  className="playhead"
+                  data-testid="playhead"
+                  role="slider"
+                  tabIndex={0}
+                  aria-label="Playback position"
+                  aria-valuemin={0}
+                  aria-valuemax={totalBars}
+                  aria-valuenow={seekBar}
+                  style={{ left: 86 + Math.min(seekBar, totalBars) * 6 }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                      e.preventDefault();
+                      seek(cursor.current + (e.key === "ArrowRight" ? 1 : -1));
+                    }
+                  }}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    resumeAfterDrag.current = playing === "arrangement";
+                    draggingPlayhead.current = true;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    stopAudio();
+                  }}
+                  onPointerMove={(e) => {
+                    if (draggingPlayhead.current) setCursor(pointerBar(e));
+                  }}
+                  onPointerUp={(e) => {
+                    if (!draggingPlayhead.current) return;
+                    draggingPlayhead.current = false;
+                    setCursor(pointerBar(e));
+                    if (resumeAfterDrag.current)
+                      void startArrangement(cursor.current);
+                  }}
+                  onPointerCancel={() => {
+                    draggingPlayhead.current = false;
+                    resumeAfterDrag.current = false;
+                  }}
+                />
                 <div className="ruler">
                   <span>BAR</span>
                   {Array.from({ length: Math.ceil(totalBars / 8) }, (_, i) => (
@@ -522,7 +941,7 @@ function App() {
                   <span className="row-label">SECTIONS</span>
                   {project.sections.map((section, i) => (
                     <div
-                      className={`section-block color-${i % 4} ${selected === section.id ? "selected" : ""}`}
+                      className={`section-block color-${i % 4} ${selected === section.id ? "selected" : ""} ${position?.section === section.id ? "is-playing" : ""}`}
                       key={section.id}
                       style={{ width: section.bars * 6 }}
                       draggable
@@ -539,6 +958,12 @@ function App() {
                         <span>{String(i + 1).padStart(2, "0")}</span>
                         <strong>{section.name}</strong>
                         <small>{section.bars} bars</small>
+                        {position?.section === section.id &&
+                          position.suggestion && (
+                            <small className="playing-suggestion">
+                              Suggestion
+                            </small>
+                          )}
                       </button>
                       <div
                         role="separator"
@@ -615,6 +1040,7 @@ function App() {
                                     (c) => c.lane !== lane,
                                   ),
                                 });
+                              else setSelected(section.id);
                             }}
                           >
                             {loop ? (
@@ -624,7 +1050,17 @@ function App() {
                                 <small>↻</small>
                               </>
                             ) : (
-                              <Plus size={14} />
+                              <span>
+                                {lane === "Loop" &&
+                                pending.some(
+                                  (p) =>
+                                    !p.skipped &&
+                                    p.section === section.id &&
+                                    project.loops.some((l) => l.id === p.loop),
+                                )
+                                  ? "Review suggestion"
+                                  : "Drop loop +"}
+                              </span>
                             )}
                           </button>
                           {clip && (
@@ -807,6 +1243,105 @@ function App() {
                   </button>
                 </div>
               </div>
+              {pending
+                .filter(
+                  (item) =>
+                    !item.skipped &&
+                    item.section === active.id &&
+                    project.loops.some((l) => l.id === item.loop),
+                )
+                .map((item) => (
+                  <div className="suggestion-card" key={item.loop}>
+                    <p>Suggested loop variation · {item.variation.kind}</p>
+                    <button
+                      disabled={!!busy}
+                      onClick={() => void renderPending(item, false)}
+                    >
+                      Audition
+                    </button>
+                    <details>
+                      <summary>Modify</summary>
+                      <label>
+                        Variation{" "}
+                        <select
+                          value={item.variation.kind}
+                          onChange={(e) =>
+                            setPending((p) =>
+                              p.map((x) =>
+                                x === item
+                                  ? {
+                                      ...x,
+                                      variation: {
+                                        ...x.variation,
+                                        kind: e.target
+                                          .value as Variation["kind"],
+                                      },
+                                    }
+                                  : x,
+                              ),
+                            )
+                          }
+                        >
+                          {[
+                            "Full",
+                            "Low-pass",
+                            "High-pass",
+                            "Filter sweep",
+                            "Quieter",
+                            "Fade",
+                          ].map((k) => (
+                            <option key={k}>{k}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {(["cutoff", "gain"] as const).map((field) => (
+                        <label key={field}>
+                          {field}
+                          <input
+                            type="number"
+                            min={field === "gain" ? 0 : 30}
+                            max={field === "gain" ? 1 : 18000}
+                            step={field === "gain" ? 0.05 : 10}
+                            value={item.variation[field]}
+                            onChange={(e) =>
+                              setPending((p) =>
+                                p.map((x) =>
+                                  x === item
+                                    ? {
+                                        ...x,
+                                        variation: {
+                                          ...x.variation,
+                                          [field]: Number(e.target.value),
+                                        },
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                      ))}
+                    </details>
+                    <button
+                      disabled={!!busy}
+                      onClick={() => void renderPending(item, true)}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      onClick={() => {
+                        stopAudio();
+                        setPending((p) =>
+                          p.map((x) =>
+                            x === item ? { ...x, skipped: true } : x,
+                          ),
+                        );
+                      }}
+                    >
+                      Skip
+                    </button>
+                  </div>
+                ))}
               <div className="tips">
                 <span className="eyebrow">A FEW THINGS TO TRY</span>
                 {(

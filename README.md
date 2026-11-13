@@ -4,10 +4,10 @@ A free, open-source, local desktop app for drum & bass producers stuck on an 8-b
 
 ## Features
 
-- Drop WAV, AIFF or MP3 loops; detect and edit BPM, key and length in 4/4 bars. Detection is approximate, especially for percussion and half-time loops.
-- Start from Intro → Build → Drop 1 → Breakdown → Build 2 → Drop 2 → Outro, with section tips.
+- Drop WAV, AIFF or MP3 loops with visible analysis progress; edit detected BPM, key and bars, then confirm role and choose a DnB subgenre. Detection is approximate.
+- Confirm a loop to start an editable 192-bar template with role-based placement and section tips; existing arrangements are preserved.
 - Reorder sections, resize in 8-bar steps, add/remove sections, and place loops on lanes. Keyboard controls offer the same edits. Loops repeat to fill their section.
-- Accept, modify or skip rule-based suggestions. Nothing fills your song automatically.
+- Accept, modify, audition or skip local filter/gain/fade variations for other sections. Pending variations stay silent until accepted. Preview loops and the arrangement locally.
 - Export an Ableton `.als` project with copied, tempo-aligned samples and section locators; Logic gets full-length stereo lane WAVs and section MIDI. Plain MIDI export remains available.
 - Dark UI; the current workspace saves on this device. Imported audio stays in the app cache. Export projects to keep durable copies.
 

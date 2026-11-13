@@ -10,6 +10,7 @@ import soundfile as sf
 
 from track_arranger.arrangement import Section
 from track_arranger.desktop_models import Project
+from track_arranger.audio import read_loop
 from track_arranger.midi_export import export_midi
 
 SR = 44100
@@ -37,12 +38,12 @@ def prepared_loops(project: Project, sources: dict[str, Path], out: Path):
     for loop_id in sorted(used):
         loop = metadata[loop_id]
         source = sources[loop_id]
-        data, rate = sf.read(source, always_2d=True, dtype='float32')
+        data, rate = read_loop(source, loop.bpm, loop.bars, loop.trim_to_bars)
         if rate != SR:
             data = librosa.resample(data.T, orig_sr=rate, target_sr=SR).T
         if data.shape[1] > 2:
             raise ValueError('Only mono and stereo loops are supported')
-        target = round(loop.bars * 240 / project.bpm * SR)
+        target = round(loop.bars * 240 / project.bpm * SR) if loop.trim_to_bars else round(len(data) * loop.bpm / project.bpm)
         stretched = librosa.effects.time_stretch(data.T, rate=len(data) / target).T
         stretched = librosa.util.fix_length(stretched, size=target, axis=0)
         dest = audio / f'{loop_id}.wav'
@@ -115,10 +116,13 @@ def export_ableton(project: Project, sources: dict[str, Path], out: Path):
             if placement:
                 path, data = prepared[placement.loop_id]
                 loop = next(l for l in project.loops if l.id == placement.loop_id)
+                loop_beats = len(data) / SR * project.bpm / 60
+                if loop.trim_to_bars or abs(loop_beats - loop.bars * 4) < project.bpm / 60 / SR:
+                    loop_beats = loop.bars * 4
                 beat = start * 4.0
                 remaining = section.bars * 4.0
                 while remaining > 1e-8:
-                    duration = min(loop.bars * 4, remaining)
+                    duration = min(loop_beats, remaining)
                     clip = node(events, 'AudioClip', Id=clip_index, Time=beat)
                     clip_index += 1
                     for tag, value in [('Name', loop.filename), ('CurrentStart', beat), ('CurrentEnd', beat + duration),
@@ -127,7 +131,7 @@ def export_ableton(project: Project, sources: dict[str, Path], out: Path):
                     loop_node = node(clip, 'Loop')
                     for tag, value in [('LoopStart', 0), ('LoopEnd', duration), ('StartRelative', 0), ('LoopOn', 'false'), ('OutMarker', duration), ('HiddenLoopStart', 0), ('HiddenLoopEnd', duration)]:
                         node(loop_node, tag, value)
-                    clip_defaults(clip, loop.bars * 4, len(data) / SR)
+                    clip_defaults(clip, loop_beats, len(data) / SR)
                     ref = node(node(clip, 'SampleRef'), 'FileRef')
                     node(ref, 'RelativePathType', 3)
                     node(ref, 'RelativePath', path.relative_to(out).as_posix())

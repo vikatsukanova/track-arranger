@@ -55,3 +55,21 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
     );
   return result;
 }
+
+export async function audioBlob(
+  id: string,
+  bpm?: number,
+  bars?: number,
+  trimToBars = true,
+  sourceBpm?: number,
+): Promise<Blob> {
+  const response = await fetch(
+    `http://127.0.0.1:${connection.port}/audio/${encodeURIComponent(id)}${`?trim_to_bars=${trimToBars}${bars ? `&bars=${bars}` : ""}${bpm ? `&bpm=${bpm}` : ""}${sourceBpm ? `&source_bpm=${sourceBpm}` : ""}`}`,
+    {
+      headers: { Authorization: `Bearer ${connection.token}` },
+    },
+  );
+  if (!response.ok)
+    throw new Error("Cannot load cached audio. Import the loop again.");
+  return response.blob();
+}

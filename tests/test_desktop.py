@@ -31,7 +31,7 @@ def click_loop(tmp_path):
 
 @pytest.fixture
 def project(click_loop):
-    return Project(bpm=172, loops=[Loop(id='test', filename='click.wav', bpm=172, key='C major', bars=8, seconds=8 * 240 / 172)],
+    return Project(bpm=172, loops=[Loop(role='Drop', id='test', filename='click.wav', bpm=172, key='C major', bars=8, seconds=8 * 240 / 172)],
                    sections=[TimelineSection(id='intro', name='Intro', bars=8, clips=[Placement(lane='Drums', loop_id='test')]),
                              TimelineSection(id='build', name='Build', bars=16, clips=[Placement(lane='Bass', loop_id='test')])])
 
@@ -122,7 +122,7 @@ def test_api_auth_validation_import_and_export(tmp_path, click_loop, project):
     assert client.post('/loops/upload', files={'file': ('bad.txt', b'bad')}).status_code == 422
     assert client.post('/loops/upload', files={'file': ('bad.wav', b'bad')}).status_code == 422
     loop = client.post('/loops/import', json={'paths': [str(click_loop)]}).json()[0]
-    project.loops[0] = Loop(**loop)
+    project.loops[0] = Loop(**loop, role='Drop')
     for section in project.sections:
         section.clips[0].loop_id = loop['id']
     assert client.post('/suggestions/intro', json=project.model_dump()).status_code == 200

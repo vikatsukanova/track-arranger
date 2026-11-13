@@ -1,3 +1,4 @@
+import re
 import json
 import os
 import secrets
@@ -8,19 +9,29 @@ from pathlib import Path
 from typing import Literal
 
 import soundfile as sf
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Query, Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from track_arranger.analysis import analyze
+from track_arranger.audio import read_loop
 from track_arranger.arrangement import build_arrangement
 from track_arranger.desktop_export import export_ableton, export_logic, sections
-from track_arranger.desktop_models import Loop, Project
+from track_arranger.desktop_models import AnalyzedLoop, Loop, Project, Variation
+from track_arranger.variations import render
 from track_arranger.midi_export import export_midi
 from track_arranger.suggestions import suggestions
 from track_arranger.tips import TIPS
 
 MAX_BYTES = 100 * 1024 * 1024
+
+
+class RenderRequest(BaseModel):
+    loop: Loop
+    bars: int = Field(ge=8, le=256, multiple_of=8)
+    bpm: float = Field(ge=160, le=180)
+    variation: Variation
 
 
 class ImportPaths(BaseModel):
@@ -44,7 +55,7 @@ def create_app(cache: Path, token: str) -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=['http://127.0.0.1:1420', 'http://localhost:1420', 'http://tauri.localhost', 'https://tauri.localhost', 'tauri://localhost'],
                        allow_methods=['GET', 'POST'], allow_headers=['Authorization', 'Content-Type'])
 
-    def register(name: str, data: bytes) -> Loop:
+    def register(name: str, data: bytes) -> AnalyzedLoop:
         suffix = Path(name).suffix.lower()
         if suffix not in {'.wav', '.aif', '.aiff', '.mp3'}:
             raise HTTPException(422, 'Choose WAV, AIFF or MP3 audio')
@@ -57,9 +68,13 @@ def create_app(cache: Path, token: str) -> FastAPI:
             info = sf.info(source)
             if info.duration > 120 or info.channels > 2:
                 raise ValueError('Loops must be mono/stereo and at most 120 seconds')
-            metadata = Loop(id=loop_id, filename=Path(name).name, **analyze(source))
+            metadata = AnalyzedLoop(id=loop_id, filename=Path(name).name, **analyze(source))
             audio, sr = sf.read(source, always_2d=True)
-            sf.write(cache / f'{loop_id}.wav', audio, sr, subtype='FLOAT')
+            raw = cache / f'{loop_id}-raw.wav'
+            sf.write(raw, audio, sr, subtype='FLOAT')
+            trimmed, _ = read_loop(raw, metadata.bpm, metadata.bars)
+            sf.write(cache / f'{loop_id}.wav', trimmed, sr, subtype='FLOAT')
+            (cache / f'{loop_id}.json').write_text(metadata.model_dump_json())
             return metadata
         except Exception as exc:
             raise HTTPException(422, f'Cannot analyze {Path(name).name}: {exc}') from exc
@@ -89,6 +104,44 @@ def create_app(cache: Path, token: str) -> FastAPI:
             except OSError as exc:
                 raise HTTPException(422, 'Cannot read audio file') from exc
         return result
+
+    @app.get('/audio/{loop_id}')
+    def audio(loop_id: str, bpm: float | None = Query(default=None, ge=30, le=300),
+              bars: float | None = Query(default=None, ge=.125, le=1024),
+              source_bpm: float | None = Query(default=None, ge=30, le=300), trim_to_bars: bool = True):
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', loop_id):
+            raise HTTPException(404, 'Unknown loop')
+        path = cache / f'{loop_id}.wav'
+        if not path.is_file():
+            raise HTTPException(404, 'Unknown loop')
+        raw = cache / f'{loop_id}-raw.wav'
+        if raw.exists():
+            path = raw
+        metadata_path = cache / f'{loop_id}.json'
+        metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+        bars = bars or metadata.get('bars', 8)
+        source_bpm = source_bpm or metadata.get('bpm', bpm or 174)
+        if bpm is not None or trim_to_bars:
+            aligned = cache / f'{loop_id}-audio-{bpm}-{source_bpm}-{bars}-{trim_to_bars}.wav'
+            if not aligned.exists():
+                if bpm is not None:
+                    render(path, aligned, bars, bpm, bars, Variation(kind='Full', gain=1), trim_to_bars, source_bpm, whole_loop=True)
+                else:
+                    data, sr = read_loop(path, source_bpm, bars, True)
+                    sf.write(aligned, data, sr, subtype='FLOAT')
+            path = aligned
+        return FileResponse(path, media_type='audio/wav')
+
+    @app.post('/variations')
+    def variation(request: RenderRequest):
+        raw = cache / f'{request.loop.id}-raw.wav'
+        source = raw if raw.exists() else cache / f'{request.loop.id}.wav'
+        if not source.is_file():
+            raise HTTPException(404, 'Unknown loop')
+        loop_id = uuid.uuid4().hex
+        render(source, cache / f'{loop_id}.wav', request.bars, request.bpm, request.loop.bars, request.variation, request.loop.trim_to_bars, request.loop.bpm)
+        return request.loop.model_copy(update=dict(id=loop_id, filename=f'{request.loop.filename} · {request.variation.kind}',
+            bars=request.bars, bpm=request.bpm, trim_to_bars=False, seconds=request.bars * 240 / request.bpm))
 
     @app.get('/arrangement')
     def arrangement():

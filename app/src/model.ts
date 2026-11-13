@@ -5,11 +5,15 @@ export type Loop = {
   key: string;
   bars: number;
   seconds: number;
+  trim_to_bars?: boolean;
+  role: Role;
+  subgenre: Subgenre;
 };
 export type Clip = { lane: string; loop_id: string };
 export type Section = { id: string; name: string; bars: number; clips: Clip[] };
 export type Project = {
   genre: "dnb";
+  subgenre?: Subgenre;
   bpm: number;
   loops: Loop[];
   sections: Section[];
@@ -59,4 +63,116 @@ export function applySuggestion(
       clips: [],
     });
   return { ...project, sections };
+}
+
+export const roles = ["Drop", "Intro", "Breakdown", "Build", "Other"] as const;
+export type Role = (typeof roles)[number];
+export const subgenres = [
+  "General",
+  "Liquid",
+  "Neurofunk",
+  "Jump-up",
+  "Rollers",
+] as const;
+export type Subgenre = (typeof subgenres)[number];
+export type ImportedLoop = Omit<Loop, "role"> & { suggested_role: Role };
+export type Variation = {
+  kind: "Full" | "Low-pass" | "High-pass" | "Filter sweep" | "Quieter" | "Fade";
+  cutoff: number;
+  gain: number;
+};
+export type Pending = {
+  section: string;
+  loop: string;
+  variation: Variation;
+  skipped?: boolean;
+};
+export function matchesRole(role: Role, name: string): boolean {
+  const matching: Record<Role, string[]> = {
+    Drop: ["Drop 1", "Drop 2"],
+    Intro: ["Intro"],
+    Breakdown: ["Breakdown"],
+    Build: ["Build"],
+    Other: [],
+  };
+  return matching[role].includes(name);
+}
+export function confirmLoop(
+  project: Project,
+  loop: Loop,
+  template: Section[],
+): Project {
+  if (!roles.includes(loop.role)) throw new Error("Confirm a loop role first");
+  const sections = project.sections.length ? project.sections : template;
+  return {
+    ...project,
+    subgenre: loop.subgenre,
+    loops: [...project.loops, loop],
+    sections: sections.map((s) =>
+      matchesRole(loop.role, s.name) && !s.clips.some((c) => c.lane === "Loop")
+        ? { ...s, clips: [...s.clips, { lane: "Loop", loop_id: loop.id }] }
+        : s,
+    ),
+  };
+}
+export function variationFor(name: string): Variation {
+  return {
+    kind: name.startsWith("Build")
+      ? "Filter sweep"
+      : name === "Breakdown"
+        ? "High-pass"
+        : name === "Outro"
+          ? "Fade"
+          : name.startsWith("Drop")
+            ? "Full"
+            : "Low-pass",
+    cutoff: name.startsWith("Build") ? 300 : name === "Breakdown" ? 400 : 500,
+    gain:
+      name.startsWith("Drop") || name.startsWith("Build")
+        ? 1
+        : name === "Breakdown"
+          ? 0.63
+          : 0.5,
+  };
+}
+
+export function placeLoops(
+  project: Project,
+  previous: Pending[] = [],
+): { sections: Section[]; pending: Pending[] } {
+  const loops = project.loops.filter((loop) => roles.includes(loop.role));
+  let sections = project.sections.map((section) => ({
+    ...section,
+    clips: section.clips.filter((clip) =>
+      project.loops.some((loop) => loop.id === clip.loop_id),
+    ),
+  }));
+  for (const loop of loops) {
+    sections = sections.map((section) =>
+      matchesRole(loop.role, section.name) &&
+      !section.clips.some((clip) => clip.lane === "Loop")
+        ? {
+            ...section,
+            clips: [...section.clips, { lane: "Loop", loop_id: loop.id }],
+          }
+        : section,
+    );
+  }
+  const pending = sections.flatMap((section) =>
+    section.clips.some((clip) => clip.lane === "Loop")
+      ? []
+      : loops
+          .filter((loop) => !matchesRole(loop.role, section.name))
+          .map(
+            (loop) =>
+              previous.find(
+                (item) => item.section === section.id && item.loop === loop.id,
+              ) || {
+                section: section.id,
+                loop: loop.id,
+                variation: variationFor(section.name),
+              },
+          ),
+  );
+  return { sections, pending };
 }

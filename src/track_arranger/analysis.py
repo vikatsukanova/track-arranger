@@ -1,12 +1,15 @@
 from pathlib import Path
 import librosa
 import numpy as np
+from track_arranger.audio import sound_bounds
 
 
 def analyze(path: Path) -> dict:
     y, sr = librosa.load(path, sr=22050, duration=120)
     if len(y) < sr / 4 or not np.any(np.abs(y) > 1e-6):
         raise ValueError('Audio must contain at least 0.25 seconds of non-silent sound')
+    start, end = sound_bounds(y)
+    active_seconds = (end - start) / sr
     onset = librosa.onset.onset_strength(y=y, sr=sr)
     tempo, _ = librosa.beat.beat_track(onset_envelope=onset, sr=sr, start_bpm=174)
     bpm = float(np.asarray(tempo).reshape(-1)[0])
@@ -16,6 +19,12 @@ def analyze(path: Path) -> dict:
         bpm *= 2
     while bpm > 200:
         bpm /= 2
+    # Sparse hits do not establish the loop end; retain their intended rests.
+    occupied = np.mean(np.abs(y[start:end]) > np.max(np.abs(y)) * .001)
+    if occupied >= .2:
+        bpm, bars = snap_loop_tempo(bpm, active_seconds)
+    else:
+        bars = max(1, round(active_seconds * bpm / 240))
     chroma = librosa.feature.chroma_stft(y=y, sr=sr).mean(axis=1)
     major = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
     minor = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
@@ -24,4 +33,30 @@ def analyze(path: Path) -> dict:
     _, tonic, mode = max(scores)
     seconds = float(librosa.get_duration(path=path))
     return dict(bpm=round(bpm, 2), key=f"{['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][tonic]} {mode}",
-                bars=max(0.125, round(seconds * bpm / 240 * 8) / 8), seconds=seconds)
+                suggested_role=guess_role(y, sr), bars=bars, seconds=seconds)
+
+
+def guess_role(y, sr):
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    spectrum = np.abs(np.fft.rfft(y)) ** 2
+    low = float(spectrum[np.fft.rfftfreq(len(y), 1 / sr) < 150].sum() / max(spectrum.sum(), 1e-12))
+    density = len(librosa.onset.onset_detect(y=y, sr=sr)) / (len(y) / sr)
+    if rms > .12 and low > .3 and density > 1:
+        return 'Drop'
+    if rms < .05 and low < .1:
+        return 'Intro'
+    return 'Drop'
+
+
+def snap_loop_tempo(bpm: float, active_seconds: float) -> tuple[float, int]:
+    sixteenth = 60 / bpm / 4
+    lengths = [active_seconds, np.floor(active_seconds / sixteenth) * sixteenth]
+    candidates = [(bars * 240 / length, bars)
+                  for length in lengths if length > 0
+                  for bars in (1, 2, 4, 8, 16, 32)
+                  if 140 <= bars * 240 / length <= 200]
+    if candidates:
+        candidate, bars = min(candidates, key=lambda item: abs(item[0] - bpm))
+        if abs(candidate - bpm) / bpm <= .04:
+            return round(candidate, 2), bars
+    return round(bpm, 2), max(1, round(active_seconds * bpm / 240))
