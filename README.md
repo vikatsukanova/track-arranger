@@ -11,6 +11,8 @@ network connection is needed to run it.
 It exists as a small, editable alternative to paid arrangement assistants:
 a starting structure that leaves the creative decisions with the producer.
 
+![Track Arranger output for a 174 BPM track](docs/track-arranger-cli.png)
+
 ## Install
 
 Requires Python 3.10 or newer. mido is the only direct runtime dependency
