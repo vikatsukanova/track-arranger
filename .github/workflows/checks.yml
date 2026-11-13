@@ -1,0 +1,43 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python-and-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: pip install -e '.[desktop,dev]'
+      - run: pytest -q
+      - run: npm ci
+        working-directory: app
+      - run: npm test && npm run build
+        working-directory: app
+  macos-shell:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci && npm run build
+        working-directory: app
+      - name: Check shell with placeholder sidecar
+        run: |
+          mkdir -p app/src-tauri/binaries
+          TARGET=$(rustc -vV | sed -n 's/host: //p')
+          touch "app/src-tauri/binaries/track-arranger-api-$TARGET"
+          cargo check --locked --manifest-path app/src-tauri/Cargo.toml

@@ -1,0 +1,64 @@
+name: Release macOS desktop
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: pip install -e '.[desktop,dev]'
+      - run: pytest -q
+      - run: npm ci && npm test && npm run build
+        working-directory: app
+      - run: python scripts/build_sidecar.py ${{ matrix.target }}
+      - name: Smoke test packaged API
+        run: python scripts/smoke_sidecar.py app/src-tauri/binaries/track-arranger-api-${{ matrix.target }}
+      - name: Build app
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles app
+        working-directory: app
+      - name: Ad-hoc sign and create DMG
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          APP="app/src-tauri/target/$TARGET/release/bundle/macos/Track Arranger.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          mkdir -p work/dmg output-release
+          cp -R "$APP" work/dmg/
+          ln -s /Applications work/dmg/Applications
+          hdiutil create -volname 'Track Arranger' -srcfolder work/dmg -ov -format UDZO "output-release/Track-Arranger-macos-$ARCH.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Track-Arranger-macos-${{ matrix.arch }}
+          path: output-release/*.dmg
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: output-release/*.dmg
+          body: 'Unsigned, ad-hoc-signed macOS build. On first launch use Control-click > Open or Privacy & Security > Open Anyway. Choose arm64 for Apple Silicon or x64 for Intel.'

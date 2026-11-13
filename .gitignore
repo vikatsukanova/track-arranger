@@ -10,3 +10,7 @@ htmlcov/
 *.mid
 work/
 .DS_Store
+node_modules/
+app/src-tauri/target/
+app/src-tauri/binaries/
+*.spec
