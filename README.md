@@ -11,7 +11,7 @@ A free, open-source, local desktop app for drum & bass producers stuck on an 8-b
 - Export an Ableton `.als` project with copied, tempo-aligned samples and section locators; Logic gets full-length stereo lane WAVs and section MIDI. Plain MIDI export remains available.
 - Dark UI; the current workspace saves on this device. Imported audio stays in the app cache. Export projects to keep durable copies.
 
-> Screenshot placeholder — desktop arrangement workspace.
+![Track Arranger arrangement workspace with loops placed across a drum and bass structure](docs/track-arranger-app.png)
 
 ## Install (macOS 12+)
 
