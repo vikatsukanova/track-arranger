@@ -10,7 +10,6 @@ network connection is needed to run it.
 
 It exists as a small, editable alternative to paid arrangement assistants:
 a starting structure that leaves the creative decisions with the producer.
-Built by Victoria Tsukanova, a senior React/TypeScript developer learning Python.
 
 ## Install
 
