@@ -1020,6 +1020,40 @@ footer .green-dot {
   background: #294238;
 }
 
-.loop-card > label { display: block; margin: 8px 0; font-size: 11px; color: #a8b1b4; }
-.loop-card > label select { display: block; margin-top: 4px; width: 100%; }
-.empty-clip span { font-size: 10px; color: #9eb3a8; }
+.loop-card > label {
+  display: block;
+  margin: 8px 0;
+  font-size: 11px;
+  color: #a8b1b4;
+}
+.loop-card > label select {
+  display: block;
+  margin-top: 4px;
+  width: 100%;
+}
+.empty-clip span {
+  font-size: 10px;
+  color: #9eb3a8;
+}
+
+.timeline {
+  position: relative;
+}
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #deff98;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: 0 0 5px #deff98;
+}
+.section-block.is-playing {
+  box-shadow: inset 0 0 0 2px #deff98;
+  background: #34462e;
+}
+.section-block .playing-suggestion {
+  color: #deff98;
+  font-weight: 700;
+}

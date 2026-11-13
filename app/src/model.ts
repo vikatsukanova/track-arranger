@@ -120,7 +120,12 @@ export function variationFor(name: string): Variation {
           : name.startsWith("Drop")
             ? "Full"
             : "Low-pass",
-    cutoff: name === "Breakdown" ? 250 : 800,
-    gain: name.startsWith("Drop") ? 1 : 0.6,
+    cutoff: name.startsWith("Build") ? 300 : name === "Breakdown" ? 400 : 500,
+    gain:
+      name.startsWith("Drop") || name.startsWith("Build")
+        ? 1
+        : name === "Breakdown"
+          ? 0.63
+          : 0.5,
   };
 }

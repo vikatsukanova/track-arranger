@@ -107,3 +107,21 @@ def test_audio_auth_and_confirm_required(tmp_path, tone):
             if accepted:
                 copied = out / 'Samples/Imported' / f"{rendered['id']}-original.wav"
                 assert copied.read_bytes() == (cache / f"{rendered['id']}.wav").read_bytes()
+
+
+def test_sweep_opens_and_outro_fades(tmp_path):
+    sr = 8000
+    count = round(8 * 240 / 174 * sr)
+    t = np.arange(count) / sr
+    source = tmp_path / 'bright.wav'
+    sf.write(source, .4 * np.sin(2 * np.pi * 2000 * t), sr, subtype='FLOAT')
+    sweep = tmp_path / 'sweep.wav'
+    render(source, sweep, 8, 174, 8, Variation(kind='Filter sweep', cutoff=300, gain=1))
+    audio, _ = sf.read(sweep)
+    rms = lambda data: np.sqrt(np.mean(data ** 2))
+    assert rms(audio[-sr:]) > rms(audio[:sr]) * 3
+    fade = tmp_path / 'fade.wav'
+    render(source, fade, 8, 174, 8, Variation(kind='Fade', cutoff=500, gain=.5))
+    audio, _ = sf.read(fade)
+    assert rms(audio[-sr//4:]) < rms(audio[:sr//4]) * .1
+    assert abs(audio[-1]) < 1e-8

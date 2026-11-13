@@ -19,7 +19,7 @@ import {
   FolderOpen,
   RotateCcw,
 } from "lucide-react";
-import { Playback } from "./playback";
+import { Playback, type Position } from "./playback";
 import { audioBlob } from "./api";
 import {
   confirmLoop,
@@ -78,6 +78,7 @@ function App() {
   const audioUrl = useRef("");
   const audioVersion = useRef(0);
   const [playing, setPlaying] = useState("");
+  const [position, setPosition] = useState<Position | null>(null);
   function stopAudio() {
     audioVersion.current++;
     player.current.stop();
@@ -86,6 +87,7 @@ function App() {
     URL.revokeObjectURL(audioUrl.current);
     audioUrl.current = "";
     setPlaying("");
+    setPosition(null);
   }
   async function preview(id: string) {
     if (playing === id && audition.current) {
@@ -103,6 +105,7 @@ function App() {
     await audition.current.play();
   }
   useEffect(() => {
+    stopAudio();
     localStorage.setItem("track-arranger-pending-v1", JSON.stringify(pending));
   }, [pending]);
   useEffect(() => {
@@ -314,12 +317,12 @@ function App() {
         if (!section || !loop) return;
         if (accept && section.clips.some((c) => c.lane === "Loop"))
           throw new Error("Loop lane is occupied. Clear it before accepting.");
-        const rendered = await api<Loop>("/variations", {
+        const rendered = await player.current.variation(
           loop,
-          bars: section.bars,
-          bpm: project.bpm,
-          variation: item.variation,
-        });
+          section,
+          project.bpm,
+          item,
+        );
         if (!accept) {
           await preview(rendered.id);
           return;
@@ -733,8 +736,10 @@ function App() {
               onClick={() =>
                 void run("Loading arrangement…", async () => {
                   stopAudio();
-                  await player.current.play(project);
-                  setPlaying("arrangement");
+                  await player.current.play(project, pending, (next) => {
+                    setPosition(next);
+                    setPlaying(next ? "arrangement" : "");
+                  });
                 })
               }
             >
@@ -811,6 +816,14 @@ function App() {
                 className="timeline"
                 style={{ width: `${Math.max(680, totalBars * 6 + 86)}px` }}
               >
+                {position && (
+                  <div
+                    className="playhead"
+                    data-testid="playhead"
+                    aria-label={`Playing bar ${Math.floor(position.bar) + 1}`}
+                    style={{ left: 86 + position.bar * 6 }}
+                  />
+                )}
                 <div className="ruler">
                   <span>BAR</span>
                   {Array.from({ length: Math.ceil(totalBars / 8) }, (_, i) => (
@@ -823,7 +836,7 @@ function App() {
                   <span className="row-label">SECTIONS</span>
                   {project.sections.map((section, i) => (
                     <div
-                      className={`section-block color-${i % 4} ${selected === section.id ? "selected" : ""}`}
+                      className={`section-block color-${i % 4} ${selected === section.id ? "selected" : ""} ${position?.section === section.id ? "is-playing" : ""}`}
                       key={section.id}
                       style={{ width: section.bars * 6 }}
                       draggable
@@ -840,6 +853,12 @@ function App() {
                         <span>{String(i + 1).padStart(2, "0")}</span>
                         <strong>{section.name}</strong>
                         <small>{section.bars} bars</small>
+                        {position?.section === section.id &&
+                          position.suggestion && (
+                            <small className="playing-suggestion">
+                              Suggestion
+                            </small>
+                          )}
                       </button>
                       <div
                         role="separator"

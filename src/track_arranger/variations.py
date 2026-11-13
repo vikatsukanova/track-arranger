@@ -24,11 +24,12 @@ def render(source: Path, destination: Path, bars: float, bpm: float, loop_bars: 
     elif variation.kind == 'High-pass':
         data = filtered('highpass', cutoff)
     elif variation.kind == 'Filter sweep':
-        # Crossfade high-pass bands to open the filter smoothly across the section.
+        # Open a low-pass from the chosen cutoff to the dry loop.
         result = np.zeros_like(data)
         position = np.linspace(0, 7, count)
-        for i, hz in enumerate(np.geomspace(cutoff, 30, 8)):
-            result += filtered('highpass', hz) * np.maximum(0, 1 - np.abs(position - i))[:, None]
+        for i, hz in enumerate(np.geomspace(cutoff, sr * .45, 8)):
+            band = data if i == 7 else filtered('lowpass', hz)
+            result += band * np.maximum(0, 1 - np.abs(position - i))[:, None]
         data = result
     elif variation.kind == 'Fade':
         data = filtered('lowpass', cutoff) * np.linspace(1, 0, count)[:, None]
