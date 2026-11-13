@@ -81,7 +81,12 @@ export type Variation = {
   cutoff: number;
   gain: number;
 };
-export type Pending = { section: string; loop: string; variation: Variation };
+export type Pending = {
+  section: string;
+  loop: string;
+  variation: Variation;
+  skipped?: boolean;
+};
 export function matchesRole(role: Role, name: string): boolean {
   const matching: Record<Role, string[]> = {
     Drop: ["Drop 1", "Drop 2"],
@@ -129,4 +134,45 @@ export function variationFor(name: string): Variation {
           ? 0.63
           : 0.5,
   };
+}
+
+export function placeLoops(
+  project: Project,
+  previous: Pending[] = [],
+): { sections: Section[]; pending: Pending[] } {
+  const loops = project.loops.filter((loop) => roles.includes(loop.role));
+  let sections = project.sections.map((section) => ({
+    ...section,
+    clips: section.clips.filter((clip) =>
+      project.loops.some((loop) => loop.id === clip.loop_id),
+    ),
+  }));
+  for (const loop of loops) {
+    sections = sections.map((section) =>
+      matchesRole(loop.role, section.name) &&
+      !section.clips.some((clip) => clip.lane === "Loop")
+        ? {
+            ...section,
+            clips: [...section.clips, { lane: "Loop", loop_id: loop.id }],
+          }
+        : section,
+    );
+  }
+  const pending = sections.flatMap((section) =>
+    section.clips.some((clip) => clip.lane === "Loop")
+      ? []
+      : loops
+          .filter((loop) => !matchesRole(loop.role, section.name))
+          .map(
+            (loop) =>
+              previous.find(
+                (item) => item.section === section.id && item.loop === loop.id,
+              ) || {
+                section: section.id,
+                loop: loop.id,
+                variation: variationFor(section.name),
+              },
+          ),
+  );
+  return { sections, pending };
 }

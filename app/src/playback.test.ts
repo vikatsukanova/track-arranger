@@ -6,7 +6,13 @@ import {
   sectionTimes,
 } from "./playback";
 import { api, audioBlob } from "./api";
-import { variationFor, type Loop, type Pending, type Project } from "./model";
+import {
+  placeLoops,
+  variationFor,
+  type Loop,
+  type Pending,
+  type Project,
+} from "./model";
 vi.mock("./api", () => ({ api: vi.fn(), audioBlob: vi.fn() }));
 const loop: Loop = {
   id: "loop",
@@ -145,6 +151,35 @@ describe("audio scheduling and caching", () => {
     );
     vi.mocked(api).mockResolvedValue({ ...loop, id: "rendered" });
     vi.mocked(audioBlob).mockResolvedValue(new Blob(["audio"]));
+  });
+  it("schedules sources after suggesting a replacement structure", async () => {
+    const empty = {
+      ...project,
+      sections: project.sections.map((s) => ({ ...s, clips: [] })),
+    };
+    const placed = placeLoops(empty);
+    const playback = new Playback();
+    await playback.play(
+      { ...empty, sections: placed.sections },
+      placed.pending,
+    );
+    expect(sources.length).toBeGreaterThan(0);
+    expect(
+      sources.every((source) => source.start.mock.calls.length === 1),
+    ).toBe(true);
+  });
+  it("rejects an empty plan, including stale pending entries, without starting the transport", async () => {
+    const playback = new Playback();
+    const empty = {
+      ...project,
+      loops: [],
+      sections: project.sections.map((s) => ({ ...s, clips: [] })),
+    };
+    await expect(playback.play(empty, pending)).rejects.toThrow(
+      "Nothing to play yet. Add a loop to a section first.",
+    );
+    expect(sources).toHaveLength(0);
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
   });
   it("schedules pending and accepted clips back to back and reuses render/audio caches", async () => {
     const playback = new Playback();

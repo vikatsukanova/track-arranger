@@ -22,7 +22,9 @@ export async function previewPlan(
       suggestion: false,
     }));
     if (!section.clips.some((c) => c.lane === "Loop")) {
-      for (const item of pending.filter((p) => p.section === section.id)) {
+      for (const item of pending.filter(
+        (p) => !p.skipped && p.section === section.id,
+      )) {
         const loop = project.loops.find((l) => l.id === item.loop);
         if (loop)
           clips.push({
@@ -168,6 +170,10 @@ export class Playback {
     const plan = await previewPlan(project, pending, (item, section, loop) =>
       this.variation(loop, section, project.bpm, item),
     );
+    if (!plan.some((section) => section.clips.length)) {
+      this.stop();
+      throw new Error("Nothing to play yet. Add a loop to a section first.");
+    }
     const buffers = new Map<string, AudioBuffer>();
     for (const { loop } of plan.flatMap((s) => s.clips)) {
       const key = JSON.stringify([

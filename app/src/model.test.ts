@@ -113,3 +113,87 @@ it("requires explicit confirmation of a role", () => {
     ),
   ).toThrow("Confirm");
 });
+
+import { placeLoops, variationFor } from "./model";
+it("repopulates a suggested structure with matching clips and pending variations", () => {
+  const result = placeLoops({
+    ...initial,
+    loops: [confirmed],
+    sections: template,
+  });
+  expect(
+    result.sections.filter((s) => s.clips.length).map((s) => s.name),
+  ).toEqual(["Drop 1", "Drop 2"]);
+  expect(result.pending.map((p) => p.section)).toEqual([
+    "0",
+    "1",
+    "3",
+    "4",
+    "6",
+  ]);
+  expect(template.every((s) => s.clips.length === 0)).toBe(true);
+});
+it("refills both drops with the remaining re-imported loop after the old one is removed", () => {
+  const old = placeLoops({
+    ...initial,
+    loops: [confirmed],
+    sections: template,
+  });
+  const replacement = { ...confirmed, id: "replacement" };
+  const imported = confirmLoop(
+    { ...initial, loops: [confirmed], sections: old.sections },
+    replacement,
+    template,
+  );
+  const removed = { ...imported, loops: [replacement] };
+  const result = placeLoops(removed, old.pending);
+  expect(
+    result.sections
+      .filter((s) => s.name.startsWith("Drop"))
+      .map((s) => s.clips[0]?.loop_id),
+  ).toEqual(["replacement", "replacement"]);
+  expect(result.pending.every((p) => p.loop === "replacement")).toBe(true);
+  const reimported = placeLoops(
+    { ...initial, loops: [], sections: template },
+    old.pending,
+  );
+  const restored = placeLoops(
+    confirmLoop(
+      { ...initial, ...reimported, loops: [] },
+      replacement,
+      template,
+    ),
+    reimported.pending,
+  );
+  expect(
+    restored.sections
+      .filter((s) => s.name.startsWith("Drop"))
+      .every((s) => s.clips.length),
+  ).toBe(true);
+});
+it("drops stale saved suggestions and retains modified and skipped suggestions on restore", () => {
+  const modified = {
+    section: "0",
+    loop: confirmed.id,
+    variation: { ...variationFor("Intro"), cutoff: 350 },
+  };
+  const skipped = {
+    section: "1",
+    loop: confirmed.id,
+    variation: variationFor("Build"),
+    skipped: true,
+  };
+  const stale = {
+    section: "3",
+    loop: "missing",
+    variation: variationFor("Breakdown"),
+  };
+  const project = { ...initial, loops: [confirmed], sections: template };
+  const result = placeLoops(project, [modified, skipped, stale]);
+  expect(result.pending).toContainEqual(modified);
+  expect(result.pending).toContainEqual(skipped);
+  expect(result.pending.some((p) => p.loop === "missing")).toBe(false);
+  expect(
+    placeLoops({ ...project, sections: result.sections }, result.pending),
+  ).toEqual(result);
+});

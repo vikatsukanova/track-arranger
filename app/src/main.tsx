@@ -28,10 +28,9 @@ import {
 import { audioBlob } from "./api";
 import {
   confirmLoop,
-  matchesRole,
+  placeLoops,
   roles,
   subgenres,
-  variationFor,
   type ImportedLoop,
   type Pending,
   type Role,
@@ -52,28 +51,34 @@ import {
 import "./style.css";
 
 function App() {
-  const [project, setProject] = useState<Project>(() => {
+  const [loaded] = useState(() => {
+    let project: Project = initial;
+    let pending: Pending[] = [];
     try {
-      return (
+      project =
         JSON.parse(localStorage.getItem("track-arranger-v1") || "null") ||
-        initial
-      );
+        initial;
     } catch {
-      return initial;
+      /* Use an empty workspace. */
     }
-  });
-  const [imports, setImports] = useState<ImportedLoop[]>([]);
-  const [role, setRole] = useState<Role>("Drop");
-  const [subgenre, setSubgenre] = useState<Subgenre>("General");
-  const [pending, setPending] = useState<Pending[]>(() => {
     try {
-      return JSON.parse(
+      pending = JSON.parse(
         localStorage.getItem("track-arranger-pending-v1") || "[]",
       );
     } catch {
-      return [];
+      /* No saved suggestions. */
     }
+    const placed = placeLoops(project, pending);
+    return {
+      project: { ...project, sections: placed.sections },
+      pending: placed.pending,
+    };
   });
+  const [project, setProject] = useState<Project>(loaded.project);
+  const [imports, setImports] = useState<ImportedLoop[]>([]);
+  const [role, setRole] = useState<Role>("Drop");
+  const [subgenre, setSubgenre] = useState<Subgenre>("General");
+  const [pending, setPending] = useState<Pending[]>(loaded.pending);
   const importing = useRef(false);
   const busyRef = useRef(false);
   const projectRef = useRef(project);
@@ -295,8 +300,10 @@ function App() {
       )
         return;
       const sections = await api<Section[]>("/arrangement");
-      setProject((p) => ({ ...p, sections }));
-      setPending([]);
+      const current = projectRef.current;
+      const placed = placeLoops({ ...current, sections });
+      setProject({ ...current, sections: placed.sections });
+      setPending(placed.pending);
       setSelected(sections[0].id);
     });
   }
@@ -307,21 +314,9 @@ function App() {
         ? []
         : await api<Section[]>("/arrangement");
       const next = confirmLoop(projectRef.current, loop, template);
-      setProject(next);
-      setPending((p) => [
-        ...p,
-        ...next.sections
-          .filter(
-            (s) =>
-              !matchesRole(role, s.name) &&
-              !s.clips.some((c) => c.lane === "Loop"),
-          )
-          .map((s) => ({
-            section: s.id,
-            loop: loop.id,
-            variation: variationFor(s.name),
-          })),
-      ]);
+      const placed = placeLoops(next, pending);
+      setProject({ ...next, sections: placed.sections });
+      setPending(placed.pending);
       setSelected(next.sections[0]?.id || "");
       setImports((p) => p.slice(1));
     });
@@ -369,6 +364,23 @@ function App() {
         setPending((p) => p.filter((x) => x !== item));
       },
     );
+  }
+  function removeLoop(id: string) {
+    const current = projectRef.current;
+    const next = {
+      ...current,
+      loops: current.loops.filter((loop) => loop.id !== id),
+      sections: current.sections.map((section) => ({
+        ...section,
+        clips: section.clips.filter((clip) => clip.loop_id !== id),
+      })),
+    };
+    const placed = placeLoops(
+      next,
+      pending.filter((item) => item.loop !== id),
+    );
+    setProject({ ...next, sections: placed.sections });
+    setPending(placed.pending);
   }
   async function browse() {
     if (!isTauri()) {
@@ -756,16 +768,7 @@ function App() {
                 <button
                   className="remove-loop"
                   aria-label={`Remove ${loop.filename}`}
-                  onClick={() =>
-                    setProject((p) => ({
-                      ...p,
-                      loops: p.loops.filter((l) => l.id !== loop.id),
-                      sections: p.sections.map((s) => ({
-                        ...s,
-                        clips: s.clips.filter((c) => c.loop_id !== loop.id),
-                      })),
-                    }))
-                  }
+                  onClick={() => removeLoop(loop.id)}
                 >
                   <X size={12} /> Remove
                 </button>
@@ -1051,6 +1054,7 @@ function App() {
                                 {lane === "Loop" &&
                                 pending.some(
                                   (p) =>
+                                    !p.skipped &&
                                     p.section === section.id &&
                                     project.loops.some((l) => l.id === p.loop),
                                 )
@@ -1242,6 +1246,7 @@ function App() {
               {pending
                 .filter(
                   (item) =>
+                    !item.skipped &&
                     item.section === active.id &&
                     project.loops.some((l) => l.id === item.loop),
                 )
@@ -1326,7 +1331,11 @@ function App() {
                     <button
                       onClick={() => {
                         stopAudio();
-                        setPending((p) => p.filter((x) => x !== item));
+                        setPending((p) =>
+                          p.map((x) =>
+                            x === item ? { ...x, skipped: true } : x,
+                          ),
+                        );
                       }}
                     >
                       Skip
