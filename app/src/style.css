@@ -977,3 +977,49 @@ footer .green-dot {
   font: inherit;
   line-height: 1.6;
 }
+
+.status.working,
+.import-confirm {
+  background: #223b36;
+  border: 1px solid #8fc9ac;
+  color: #e8fff1;
+  padding: 18px;
+}
+.import-confirm {
+  margin: 16px 28px;
+  border-radius: 12px;
+}
+.import-confirm label,
+.suggestion-card label {
+  display: block;
+  margin: 10px 0;
+}
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #729386;
+  border-top-color: #e8fff1;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.dropzone[aria-busy="true"],
+.loop-card.pending {
+  border-color: #9addb8;
+  background: #223b36;
+}
+.lane-cell {
+  border: 1px dashed #607d72;
+}
+.lane-cell:hover {
+  background: #294238;
+}
+
+.loop-card > label { display: block; margin: 8px 0; font-size: 11px; color: #a8b1b4; }
+.loop-card > label select { display: block; margin-top: 4px; width: 100%; }
+.empty-clip span { font-size: 10px; color: #9eb3a8; }

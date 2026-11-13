@@ -39,3 +39,77 @@ describe("producer-controlled arrangement", () => {
     expect(result.sections[1].clips).toEqual([]);
   });
 });
+
+import { confirmLoop, initial, type Loop } from "./model";
+const confirmed: Loop = {
+  id: "loop",
+  filename: "tone.wav",
+  bpm: 174,
+  key: "C",
+  bars: 8,
+  seconds: 11,
+  role: "Drop",
+  subgenre: "Liquid",
+};
+const template = [
+  "Intro",
+  "Build",
+  "Drop 1",
+  "Breakdown",
+  "Build 2",
+  "Drop 2",
+  "Outro",
+].map((name, i) => ({
+  id: String(i),
+  name,
+  bars: name.startsWith("Drop")
+    ? 48
+    : name.startsWith("Build")
+      ? 16
+      : name === "Breakdown"
+        ? 32
+        : 16,
+  clips: [],
+}));
+it.each([
+  ["Drop", [2, 5]],
+  ["Intro", [0]],
+  ["Build", [1]],
+  ["Breakdown", [3]],
+  ["Other", []],
+] as const)(
+  "places confirmed %s only in matching sections",
+  (role, expected) => {
+    const result = confirmLoop(initial, { ...confirmed, role }, template);
+    expect(
+      result.sections.flatMap((s, i) => (s.clips.length ? [i] : [])),
+    ).toEqual(expected);
+    expect(template.every((s) => s.clips.length === 0)).toBe(true);
+    expect(result.subgenre).toBe("Liquid");
+  },
+);
+it("preserves an existing structure and occupied lanes", () => {
+  const existing = {
+    ...initial,
+    sections: [
+      {
+        id: "custom",
+        name: "Drop 1",
+        bars: 24,
+        clips: [{ lane: "Loop", loop_id: "mine" }],
+      },
+    ],
+  };
+  expect(confirmLoop(existing, confirmed, template).sections).toEqual(
+    existing.sections,
+  );
+});
+it("requires explicit confirmation of a role", () => {
+  expect(() =>
+    confirmLoop(
+      initial,
+      { ...confirmed, role: undefined } as unknown as Loop,
+      template,
+    ),
+  ).toThrow("Confirm");
+});

@@ -2,13 +2,30 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-class Loop(BaseModel):
+Role = Literal['Drop', 'Intro', 'Breakdown', 'Build', 'Other']
+Subgenre = Literal['General', 'Liquid', 'Neurofunk', 'Jump-up', 'Rollers']
+
+
+class AnalyzedLoop(BaseModel):
     id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,64}$')
     filename: str
     bpm: float = Field(ge=30, le=300)
     key: str = Field(max_length=32)
     bars: float = Field(ge=0.125, le=1024)
     seconds: float = Field(gt=0)
+
+    subgenre: Subgenre = 'General'
+    suggested_role: Role = 'Drop'
+
+
+class Loop(AnalyzedLoop):
+    role: Role
+
+
+class Variation(BaseModel):
+    kind: Literal['Full', 'Low-pass', 'High-pass', 'Filter sweep', 'Quieter', 'Fade'] = 'Low-pass'
+    cutoff: float = Field(default=800, ge=30, le=18000)
+    gain: float = Field(default=0.6, ge=0, le=1)
 
 
 class Placement(BaseModel):
@@ -31,6 +48,7 @@ class TimelineSection(BaseModel):
 
 class Project(BaseModel):
     genre: Literal['dnb'] = 'dnb'
+    subgenre: Subgenre = 'General'
     bpm: float = Field(default=174, ge=160, le=180)
     sections: list[TimelineSection] = Field(min_length=1, max_length=64)
     loops: list[Loop] = Field(default_factory=list, max_length=128)

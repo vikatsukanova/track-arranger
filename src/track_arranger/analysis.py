@@ -24,4 +24,16 @@ def analyze(path: Path) -> dict:
     _, tonic, mode = max(scores)
     seconds = float(librosa.get_duration(path=path))
     return dict(bpm=round(bpm, 2), key=f"{['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][tonic]} {mode}",
-                bars=max(0.125, round(seconds * bpm / 240 * 8) / 8), seconds=seconds)
+                suggested_role=guess_role(y, sr), bars=max(0.125, round(seconds * bpm / 240 * 8) / 8), seconds=seconds)
+
+
+def guess_role(y, sr):
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    spectrum = np.abs(np.fft.rfft(y)) ** 2
+    low = float(spectrum[np.fft.rfftfreq(len(y), 1 / sr) < 150].sum() / max(spectrum.sum(), 1e-12))
+    density = len(librosa.onset.onset_detect(y=y, sr=sr)) / (len(y) / sr)
+    if rms > .12 and low > .3 and density > 1:
+        return 'Drop'
+    if rms < .05 and low < .1:
+        return 'Intro'
+    return 'Drop'
