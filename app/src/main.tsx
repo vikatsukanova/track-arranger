@@ -19,7 +19,7 @@ import {
   FolderOpen,
   RotateCcw,
 } from "lucide-react";
-import { Playback, type Position } from "./playback";
+import { Playback, shouldToggleTransport, type Position } from "./playback";
 import { audioBlob } from "./api";
 import {
   confirmLoop,
@@ -78,6 +78,10 @@ function App() {
   const audioUrl = useRef("");
   const audioVersion = useRef(0);
   const [playing, setPlaying] = useState("");
+  const cursor = useRef(0);
+  const [seekBar, setSeekBar] = useState(0);
+  const draggingPlayhead = useRef(false);
+  const resumeAfterDrag = useRef(false);
   const [position, setPosition] = useState<Position | null>(null);
   function stopAudio() {
     audioVersion.current++;
@@ -89,7 +93,10 @@ function App() {
     setPlaying("");
     setPosition(null);
   }
-  async function preview(id: string) {
+  async function preview(
+    id: string,
+    metadata = project.loops.find((l) => l.id === id),
+  ) {
     if (playing === id && audition.current) {
       if (audition.current.paused) await audition.current.play();
       else audition.current.pause();
@@ -97,7 +104,13 @@ function App() {
     }
     stopAudio();
     const version = audioVersion.current;
-    const blob = await audioBlob(id);
+    const blob = await audioBlob(
+      id,
+      undefined,
+      metadata?.bars,
+      metadata?.trim_to_bars ?? true,
+      metadata?.bpm,
+    );
     if (version !== audioVersion.current) return;
     audioUrl.current = URL.createObjectURL(blob);
     audition.current = new Audio(audioUrl.current);
@@ -324,7 +337,7 @@ function App() {
           item,
         );
         if (!accept) {
-          await preview(rendered.id);
+          await preview(rendered.id, rendered);
           return;
         }
         const current = projectRef.current.sections.find(
@@ -384,6 +397,46 @@ function App() {
       ),
     }));
   }
+  function setCursor(bar: number) {
+    cursor.current = Math.max(0, Math.min(bar, totalBars));
+    setSeekBar(cursor.current);
+  }
+  async function startArrangement(bar = cursor.current) {
+    await run("Loading arrangement…", async () => {
+      stopAudio();
+      await player.current.play(
+        project,
+        pending,
+        (next) => {
+          setPosition(next);
+          if (next) setCursor(next.bar);
+          setPlaying(next ? "arrangement" : "");
+        },
+        bar,
+      );
+    });
+  }
+  function seek(bar: number) {
+    const resume = playing === "arrangement";
+    stopAudio();
+    setCursor(bar);
+    if (resume) void startArrangement(cursor.current);
+  }
+  function pointerBar(event: React.PointerEvent | React.MouseEvent) {
+    const timeline = (event.currentTarget as HTMLElement).closest(".timeline")!;
+    return (event.clientX - timeline.getBoundingClientRect().left - 86) / 6;
+  }
+  useEffect(() => {
+    function keydown(event: KeyboardEvent) {
+      if (!shouldToggleTransport(event)) return;
+      event.preventDefault();
+      if (playing === "arrangement") stopAudio();
+      else if (ready && !busy && !imports.length && project.sections.length)
+        void startArrangement();
+    }
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [playing, ready, busy, imports.length, project, pending]);
   const disabled = !ready || !!busy || !!imports.length;
   return (
     <div className="app">
@@ -637,6 +690,16 @@ function App() {
                     ))}
                   </select>
                 </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={loop.trim_to_bars ?? true}
+                    onChange={(e) =>
+                      updateLoop(loop.id, { trim_to_bars: e.target.checked })
+                    }
+                  />{" "}
+                  Trim to bars
+                </label>
                 <div className="loop-metadata">
                   <label>
                     BPM
@@ -733,19 +796,12 @@ function App() {
           <div className="timeline-controls">
             <button
               disabled={disabled || !project.sections.length}
-              onClick={() =>
-                void run("Loading arrangement…", async () => {
-                  stopAudio();
-                  await player.current.play(project, pending, (next) => {
-                    setPosition(next);
-                    setPlaying(next ? "arrangement" : "");
-                  });
-                })
-              }
+              onClick={() => void startArrangement()}
             >
               Play arrangement
             </button>
             <button onClick={stopAudio}>Stop</button>
+            <button onClick={() => seek(0)}>Return to start</button>
             <span>
               <span className="green-dot" /> 8-BAR GRID
             </span>
@@ -814,16 +870,55 @@ function App() {
             <div className="timeline-scroll">
               <div
                 className="timeline"
+                onClickCapture={(e) => {
+                  const target = e.target as HTMLElement;
+                  if (
+                    !target.closest(".playhead, .resize") &&
+                    target.closest(".ruler, .section-row")
+                  )
+                    seek(pointerBar(e));
+                }}
                 style={{ width: `${Math.max(680, totalBars * 6 + 86)}px` }}
               >
-                {position && (
-                  <div
-                    className="playhead"
-                    data-testid="playhead"
-                    aria-label={`Playing bar ${Math.floor(position.bar) + 1}`}
-                    style={{ left: 86 + position.bar * 6 }}
-                  />
-                )}
+                <div
+                  className="playhead"
+                  data-testid="playhead"
+                  role="slider"
+                  tabIndex={0}
+                  aria-label="Playback position"
+                  aria-valuemin={0}
+                  aria-valuemax={totalBars}
+                  aria-valuenow={seekBar}
+                  style={{ left: 86 + Math.min(seekBar, totalBars) * 6 }}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                      e.preventDefault();
+                      seek(cursor.current + (e.key === "ArrowRight" ? 1 : -1));
+                    }
+                  }}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    resumeAfterDrag.current = playing === "arrangement";
+                    draggingPlayhead.current = true;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    stopAudio();
+                  }}
+                  onPointerMove={(e) => {
+                    if (draggingPlayhead.current) setCursor(pointerBar(e));
+                  }}
+                  onPointerUp={(e) => {
+                    if (!draggingPlayhead.current) return;
+                    draggingPlayhead.current = false;
+                    setCursor(pointerBar(e));
+                    if (resumeAfterDrag.current)
+                      void startArrangement(cursor.current);
+                  }}
+                  onPointerCancel={() => {
+                    draggingPlayhead.current = false;
+                    resumeAfterDrag.current = false;
+                  }}
+                />
                 <div className="ruler">
                   <span>BAR</span>
                   {Array.from({ length: Math.ceil(totalBars / 8) }, (_, i) => (

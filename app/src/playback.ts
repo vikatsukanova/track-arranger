@@ -79,6 +79,32 @@ export function playbackPosition(
   };
 }
 
+export function seekOffset(
+  bar: number,
+  sectionStart: number,
+  loopBars: number,
+  bpm: number,
+) {
+  return (
+    (((((bar - sectionStart) % loopBars) + loopBars) % loopBars) * 240) / bpm
+  );
+}
+
+export function shouldToggleTransport(event: KeyboardEvent): boolean {
+  return (
+    event.code === "Space" &&
+    !event.repeat &&
+    !event.defaultPrevented &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !(
+      event.target instanceof Element &&
+      event.target.closest("input, textarea, select, [contenteditable]")
+    )
+  );
+}
+
 export class Playback {
   private context?: AudioContext;
   private nodes: AudioBufferSourceNode[] = [];
@@ -128,6 +154,7 @@ export class Playback {
     project: Project,
     pending: Pending[] = [],
     onPosition?: (position: Position | null) => void,
+    fromBar = 0,
   ) {
     this.stop();
     const version = this.version;
@@ -139,12 +166,24 @@ export class Playback {
     );
     const buffers = new Map<string, AudioBuffer>();
     for (const { loop } of plan.flatMap((s) => s.clips)) {
-      const key = JSON.stringify([loop.id, project.bpm, loop.bars]);
+      const key = JSON.stringify([
+        loop.id,
+        project.bpm,
+        loop.bars,
+        loop.trim_to_bars ?? true,
+        loop.bpm,
+      ]);
       let buffer = this.buffers.get(key);
       if (!buffer) {
         buffer = await context.decodeAudioData(
           await (
-            await audioBlob(loop.id, project.bpm, loop.bars)
+            await audioBlob(
+              loop.id,
+              project.bpm,
+              loop.bars,
+              loop.trim_to_bars ?? true,
+              loop.bpm,
+            )
           ).arrayBuffer(),
         );
         this.buffers.set(key, buffer);
@@ -155,19 +194,33 @@ export class Playback {
     const start =
       Math.ceil((context.currentTime + 0.1) * context.sampleRate) /
       context.sampleRate;
+    fromBar = Math.max(0, Math.min(fromBar, plan.at(-1)?.endBar || 0));
+    const seekSeconds =
+      Math.round(((fromBar * 240) / project.bpm) * context.sampleRate) /
+      context.sampleRate;
+    const origin = start - seekSeconds;
     for (const section of plan) {
+      if (section.endBar <= fromBar) continue;
       const times = sectionTimes(
         section,
         project.bpm,
         context.sampleRate,
-        start,
+        origin,
       );
       for (const { loop } of section.clips) {
         const source = context.createBufferSource();
         source.buffer = buffers.get(loop.id)!;
         source.loop = true;
         source.connect(context.destination);
-        source.start(times.start);
+        source.start(
+          Math.max(start, times.start),
+          seekOffset(
+            Math.max(fromBar, section.startBar),
+            section.startBar,
+            (source.buffer!.duration * project.bpm) / 240,
+            project.bpm,
+          ),
+        );
         source.stop(times.end);
         this.nodes.push(source);
       }
@@ -178,10 +231,17 @@ export class Playback {
         plan,
         project.bpm,
         context.sampleRate,
-        start,
-        context.currentTime,
+        origin,
+        Math.max(start, context.currentTime),
       );
       if (!position) {
+        const last = plan.at(-1);
+        if (last)
+          this.onPosition?.({
+            bar: last.endBar,
+            section: last.id,
+            suggestion: false,
+          });
         this.stop();
         return;
       }

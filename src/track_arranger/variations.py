@@ -6,15 +6,16 @@ import soundfile as sf
 from scipy.signal import butter, sosfilt
 
 from track_arranger.desktop_models import Variation
+from track_arranger.audio import read_loop
 
 
-def render(source: Path, destination: Path, bars: float, bpm: float, loop_bars: float, variation: Variation):
-    data, sr = sf.read(source, always_2d=True, dtype='float32')
-    target = max(1, round(loop_bars * 240 / bpm * sr))
+def render(source: Path, destination: Path, bars: float, bpm: float, loop_bars: float, variation: Variation, trim_to_bars=False, source_bpm=None, whole_loop=False):
+    data, sr = read_loop(source, source_bpm or bpm, loop_bars, trim_to_bars)
+    target = max(1, round(len(data) * source_bpm / bpm)) if not trim_to_bars and source_bpm is not None else max(1, round(loop_bars * 240 / bpm * sr))
     if len(data) != target:
         data = librosa.effects.time_stretch(data.T, rate=len(data) / target).T
     data = librosa.util.fix_length(data, size=target, axis=0)
-    count = round(bars * 240 / bpm * sr)
+    count = target if whole_loop else round(bars * 240 / bpm * sr)
     data = data[np.arange(count) % len(data)]
     cutoff = min(variation.cutoff, sr * .45)
     def filtered(kind, hz):

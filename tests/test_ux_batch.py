@@ -125,3 +125,86 @@ def test_sweep_opens_and_outro_fades(tmp_path):
     audio, _ = sf.read(fade)
     assert rms(audio[-sr//4:]) < rms(audio[:sr//4]) * .1
     assert abs(audio[-1]) < 1e-8
+
+
+def test_trim_exact_bars_and_original_toggle(tmp_path):
+    from track_arranger.audio import read_loop
+    sr, bpm, bars = 8000, 174, 2
+    count = round(bars * 240 / bpm * sr)
+    tone = .4 * np.cos(2 * np.pi * 120 * np.arange(count) / sr)
+    original = np.concatenate([np.zeros(sr//2), tone, np.zeros(sr*2)])
+    source = tmp_path / 'padded.wav'
+    sf.write(source, original, sr, subtype='FLOAT')
+    before = source.read_bytes()
+    trimmed, _ = read_loop(source, bpm, bars, True)
+    untrimmed, _ = read_loop(source, bpm, bars, False)
+    assert len(trimmed) == count
+    assert len(untrimmed) == len(original)
+    np.testing.assert_allclose(trimmed[:, 0], tone, atol=1e-7)
+    assert source.read_bytes() == before
+    # Authenticated preview uses the same toggle and never changes the source.
+    cache = tmp_path / 'cache'
+    client = TestClient(create_app(cache, 'secret'))
+    client.headers['Authorization'] = 'Bearer secret'
+    (cache / 'padded.wav').write_bytes(before)
+    import io
+    for trim, expected in [(True,count),(False,len(original))]:
+        result = client.get(f'/audio/padded?bars={bars}&source_bpm={bpm}&trim_to_bars={str(trim).lower()}')
+        assert result.status_code == 200
+        assert sf.info(io.BytesIO(result.content)).frames == expected
+        aligned = client.get(f'/audio/padded?bpm={bpm}&bars={bars}&source_bpm={bpm}&trim_to_bars={str(trim).lower()}')
+        assert sf.info(io.BytesIO(aligned.content)).frames == expected
+    assert (cache / 'padded.wav').read_bytes() == before
+
+
+def test_analysis_ignores_trailing_silence_for_bar_count(tmp_path):
+    from track_arranger.analysis import analyze
+    sr, bpm, bars = 22050, 172, 8
+    count = round(bars * 240 / bpm * sr)
+    data = np.zeros(count)
+    click = np.cos(np.arange(440) * 2*np.pi*1000/sr) * np.exp(-np.arange(440)/60)
+    for beat in range(32):
+        start = round(beat * 60/bpm*sr)
+        data[start:start+len(click)] += click
+    path = tmp_path / 'padded-click.wav'
+    sf.write(path, np.concatenate([np.zeros(sr//2),data,np.zeros(sr*2)]),sr)
+    metadata = analyze(path)
+    assert abs(metadata['bpm'] - bpm) < 3
+    assert metadata['bars'] == bars
+
+
+def test_import_caches_trimmed_and_original_audio(tmp_path):
+    sr = 8000
+    source = tmp_path / 'source.wav'
+    t = np.arange(sr * 3) / sr
+    sf.write(source, np.concatenate([np.zeros(sr//2), .4*np.cos(2*np.pi*120*t), np.zeros(sr*2)]), sr)
+    before = source.read_bytes()
+    cache = tmp_path / 'cache'
+    client = TestClient(create_app(cache, 'secret'))
+    client.headers['Authorization'] = 'Bearer secret'
+    result = client.post('/loops/import', json={'paths':[str(source)]})
+    assert result.status_code == 200
+    loop = result.json()[0]
+    assert loop['trim_to_bars'] is True
+    assert sf.info(cache / f"{loop['id']}.wav").frames == round(loop['bars']*240/loop['bpm']*sr)
+    assert sf.info(cache / f"{loop['id']}-raw.wav").frames == len(t) + sr//2 + sr*2
+    assert source.read_bytes() == before
+
+
+def test_trim_toggle_controls_export_loop_length(tmp_path):
+    from track_arranger.desktop_export import prepared_loops, SR
+    sr, bpm, bars = 8000, 174, 2
+    count = round(bars * 240 / bpm * sr)
+    source = tmp_path / 'padded.wav'
+    sf.write(source, np.concatenate([.4*np.cos(2*np.pi*120*np.arange(count)/sr), np.zeros(sr*2)]), sr)
+    for trim in (True, False):
+        item = loop().model_copy(update={'bpm':bpm,'bars':bars,'trim_to_bars':trim})
+        project = Project(bpm=bpm, loops=[item], sections=[TimelineSection(id='drop',name='Drop 1',bars=8,clips=[Placement(lane='Loop',loop_id=item.id)])])
+        prepared = prepared_loops(project,{item.id:source},tmp_path / str(trim))
+        data = prepared[item.id][1]
+        if trim:
+            assert len(data) == round(bars*240/bpm*SR)
+            assert np.sqrt(np.mean(data[-SR:]**2)) > .1
+        else:
+            assert abs(len(data) - round((count/sr + 2)*SR)) <= 1
+            assert np.max(np.abs(data[-SR:])) < 1e-4

@@ -1,12 +1,15 @@
 from pathlib import Path
 import librosa
 import numpy as np
+from track_arranger.audio import sound_bounds
 
 
 def analyze(path: Path) -> dict:
     y, sr = librosa.load(path, sr=22050, duration=120)
     if len(y) < sr / 4 or not np.any(np.abs(y) > 1e-6):
         raise ValueError('Audio must contain at least 0.25 seconds of non-silent sound')
+    start, end = sound_bounds(y)
+    active_seconds = (end - start) / sr
     onset = librosa.onset.onset_strength(y=y, sr=sr)
     tempo, _ = librosa.beat.beat_track(onset_envelope=onset, sr=sr, start_bpm=174)
     bpm = float(np.asarray(tempo).reshape(-1)[0])
@@ -24,7 +27,7 @@ def analyze(path: Path) -> dict:
     _, tonic, mode = max(scores)
     seconds = float(librosa.get_duration(path=path))
     return dict(bpm=round(bpm, 2), key=f"{['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][tonic]} {mode}",
-                suggested_role=guess_role(y, sr), bars=max(0.125, round(seconds * bpm / 240 * 8) / 8), seconds=seconds)
+                suggested_role=guess_role(y, sr), bars=max(1, round(active_seconds * bpm / 240)), seconds=seconds)
 
 
 def guess_role(y, sr):

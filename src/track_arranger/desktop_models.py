@@ -13,6 +13,7 @@ class AnalyzedLoop(BaseModel):
     key: str = Field(max_length=32)
     bars: float = Field(ge=0.125, le=1024)
     seconds: float = Field(gt=0)
+    trim_to_bars: bool = True
 
     subgenre: Subgenre = 'General'
     suggested_role: Role = 'Drop'

@@ -128,7 +128,9 @@ describe("audio scheduling and caching", () => {
         }
         destination = {};
         resume = vi.fn().mockResolvedValue(undefined);
-        decodeAudioData = vi.fn().mockResolvedValue({});
+        decodeAudioData = vi
+          .fn()
+          .mockResolvedValue({ duration: (8 * 240) / 174 });
         createBufferSource() {
           const source = {
             start: vi.fn(),
@@ -167,6 +169,19 @@ describe("audio scheduling and caching", () => {
     playback.stop();
     expect(progress).toHaveBeenLastCalledWith(null);
     expect(cancelAnimationFrame).toHaveBeenCalled();
+  });
+  it("starts mid-section with the correct offset and skips earlier sections", async () => {
+    const playback = new Playback();
+    await playback.play(project, pending, vi.fn(), 4);
+    expect(sources[0].start.mock.calls[0][1]).toBeCloseTo((4 * 240) / 174);
+    expect(sources[0].stop.mock.calls[0][0]).toBe(
+      sources[1].start.mock.calls[0][0],
+    );
+    playback.stop();
+    sources = [];
+    await playback.play(project, pending, vi.fn(), 12);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].start.mock.calls[0][1]).toBeCloseTo((4 * 240) / 174);
   });
   it("invalidates the render when variation parameters, duration or tempo change", async () => {
     const playback = new Playback();
@@ -207,4 +222,33 @@ it("uses clearly audible default variation parameters", () => {
     cutoff: 500,
     gain: 0.5,
   });
+});
+
+import { seekOffset, shouldToggleTransport } from "./playback";
+it("keeps loop phase when seeking into a section", () => {
+  expect(seekOffset(19, 16, 8, 174)).toBeCloseTo((3 * 240) / 174);
+  expect(seekOffset(27, 16, 8, 174)).toBeCloseTo((3 * 240) / 174);
+  // A rendered suggestion spans its section, so its sweep/fade keeps its phase.
+  expect(seekOffset(27, 16, 32, 174)).toBeCloseTo((11 * 240) / 174);
+});
+it("ignores space while typing, editing selections, or holding the key", () => {
+  const OriginalElement = globalThis.Element;
+  class Target {
+    constructor(private editing: boolean) {}
+    closest() {
+      return this.editing ? this : null;
+    }
+  }
+  vi.stubGlobal("Element", Target);
+  const event = (editing: boolean, overrides = {}) =>
+    ({
+      code: "Space",
+      target: new Target(editing),
+      ...overrides,
+    }) as unknown as KeyboardEvent;
+  expect(shouldToggleTransport(event(false))).toBe(true);
+  expect(shouldToggleTransport(event(true))).toBe(false);
+  expect(shouldToggleTransport(event(false, { repeat: true }))).toBe(false);
+  expect(shouldToggleTransport(event(false, { code: "Enter" }))).toBe(false);
+  vi.stubGlobal("Element", OriginalElement);
 });

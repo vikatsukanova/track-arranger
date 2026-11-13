@@ -60,9 +60,11 @@ export async function audioBlob(
   id: string,
   bpm?: number,
   bars?: number,
+  trimToBars = true,
+  sourceBpm?: number,
 ): Promise<Blob> {
   const response = await fetch(
-    `http://127.0.0.1:${connection.port}/audio/${encodeURIComponent(id)}${bpm ? `?bpm=${bpm}&bars=${bars}` : ""}`,
+    `http://127.0.0.1:${connection.port}/audio/${encodeURIComponent(id)}${`?trim_to_bars=${trimToBars}${bars ? `&bars=${bars}` : ""}${bpm ? `&bpm=${bpm}` : ""}${sourceBpm ? `&source_bpm=${sourceBpm}` : ""}`}`,
     {
       headers: { Authorization: `Bearer ${connection.token}` },
     },

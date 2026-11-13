@@ -5,6 +5,7 @@ export type Loop = {
   key: string;
   bars: number;
   seconds: number;
+  trim_to_bars?: boolean;
   role: Role;
   subgenre: Subgenre;
 };
